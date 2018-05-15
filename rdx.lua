@@ -33,7 +33,7 @@ function Class(Identifier, ...)
     storing functions, values, and references. The benefit of diverging the metatable
     of the class into a proxy is that any form of index will *always* be triggered and subsequently validated.
     ]]
-    local Class = {oid = Identifier, id = Identifier, supers = {}, decl = true}
+    local Class = {originalId = Identifier, id = Identifier, supers = {}, decl = true}
     local Proxy = newproxy(true)
     local Metatable = getmetatable(Proxy)
     local Overrides = {}
@@ -201,6 +201,25 @@ function Class(Identifier, ...)
     metamethods with the Class function variable set to the clone as to properly validate field traits.
     ]]
     function Class:new()
+        local NewClass = DeepCopy(Class)
+        NewClass.decl = false
+        
+        local NewProxy = newproxy(true)
+        local ProxyMetatable = getmetatable(NewProxy)
+        ProxyMetatable.__index = function(px, key)
+            return Metatable.__index(NewProxy, key, NewClass)
+        end
+        
+        ProxyMetatable.__newindex = function(px, key, val)
+            return Metatable.__newindex(NewProxy, key, val, NewClass)
+        end
+        
+        for op, _ in pairs(META_OPS) do
+            ProxyMetatable[op] = (function(...) return Metatable[op](...) end)
+        end
+        
+        NewClass.proxy = NewProxy
+        return NewProxy
     end
 
     --[[
@@ -337,6 +356,7 @@ function Class(Identifier, ...)
         
     end
     Metatable.__metatable = ("<protected metatable %s>"):format(tostring(Proxy))
+    Metatable.__tostring = function(class) return ("<class %s>"):format(Identifier) end
     
     --[[
         Before we return the prototype, we need to properly inherit the given classes.
@@ -363,6 +383,6 @@ function Class(Identifier, ...)
 end
 
 base = Class('test')
-base:protected().a = 5
+base:private().a = 5
 derived = Class('derived', base)
 derived.geta = function(self) return self.a end
