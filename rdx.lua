@@ -104,6 +104,7 @@ function Class(Identifier, ...)
             WrapperMetatable.__index = function(class, key)
                 Metatable.__index(class, key, store, true)
             end
+            WrapperMetatable.__metatable = ('<protected class function wrapper metatable %s>'):format(str(Wrapper))
             
             Match.ref(Wrapper, ...)
         else
@@ -220,7 +221,11 @@ function Class(Identifier, ...)
                 assert(Class:instanceOf(Value.class), ("Attempt to access protected field <%s>"):format(key))
             end
             
-            if type(Value.ref) == 'function' then
+            if Value.accessors.get then
+                -- Set our value name for the accessor to use
+                getfenv(Value.accessors.get)[key] = Value.ref
+                return Value.accessors.get()
+            elseif type(Value.ref) == 'function' then
                 if #Value.overloads > 1 then
                     return (function(...)
                         Class:dispatch(class, key, Value.ref, store, nil, ...)
@@ -239,8 +244,28 @@ function Class(Identifier, ...)
     end
 
     
-    Metatable.__newindex = function(class, key, value, store, traits)
+    Metatable.__newindex = function(class, key, new, store, traits)
         traits = traits or {}
+        
+        -- If the value already exists within our class, let's make sure we're not re-declaring it.
+        Value = store[key]
+        if Value then
+            assert(traits == {}, ('Attempt to declare already-existing field <%s>'):format(key))
+            if Value.accessors.set then
+                -- We have an accessor. Let's fix it's environment and run it.
+                getfenv(Value.accessors.set)['value'] = new
+                getfenv(Value.accessors.set)[key] = Value
+                -- Now we can call it and fetch the new value
+                Value.accessors.set()
+                store[key] = getfenv(Value.accessors.set)[key]
+                return
+            end
+            assert(not Value.traits[DECL_FLAGS.final], ("Attempt to modify final field <%s>"):format(key))
+        else
+            assert(class:isPrototype(), ("Attempt to declare field <%s> outside of prototype"):format(key))
+            -- We're dealing with a new value. First, let's validate the fields.
+        end
+        
         
     end
     Metatable.__metatable = ("<protected metatable %s>"):format(str(Proxy))
@@ -258,37 +283,5 @@ function Class(Identifier, ...)
         WalkClass(v)
     end
     
+    return Proxy
 end
-
-local function a()
-    m = 5
-    
-    local function z()
-        return m + 3
-    end
-    
-    return z
-end
-
-print(a()())
-function j() func=a() getfenv(func)['m'] = 13 print(func()) end
-j()
-
-b=newproxy(true)
-a={}
-a.x = 1
-mt = getmetatable(b)
-mt.__index=function(tbl, key)
-    print("get index")
-    print(a[key])
-    return getmetatable(a).__index(a, key)
-end
-mt.__newindex=function(tbl, key, val)
-    print("index cr")
-    print(key, val)
-    return getmetatable(a).__newindex(a, key, val)
-end
-function b:test(l)
-    print(self.x + l)
-end
-print(b.test(a, 5))
