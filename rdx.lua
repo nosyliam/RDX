@@ -25,7 +25,7 @@ function Class(Identifier, ...)
     local Overrides = {}
     
     -- Weak table for faster indexing of signatures
-    local SignatureCache = setmetatable({}, {__mode = 'v'})
+    local SignatureCache = setmetatable({}, {__mode = 'kv'})
 
     --[[
     GenerateSignature will create a signature string with the given class, value name, and
@@ -62,14 +62,10 @@ function Class(Identifier, ...)
         return Signature
     end
     
-    local function FindMatchingSignature(signature)
-    end
-    
-    local function CreateDeclWrapper(self, flag)
-        assert(pcall(self.type, self), 'Object passed to declarator is not a valid class')
+    local function CreateDeclWrapper(class, flag)
+        assert(pcall(class.type, class), "Object passed to declarator is not a valid class")
         
         if (self._decltraits) then
-            assert(not self.decltraits[DECL_FLAGS.fast], 'Active trait fast must be isolated')
             -- We're dealing with an existing wrapper. All we need to do is append our trait.
             self._decltraits[flag] = true
         else
@@ -84,18 +80,18 @@ function Class(Identifier, ...)
             
             WrapperMetatable.__newindex = function(class, key, val)
                 if Store[key] then Store[key] = val end
-                Metatable.__newindex(Class, key, val, Store._decltraits)
+                Metatable.__newindex(class.proxy or Proxy, key, val, Store._decltraits)
             end
             
             return Wrapper
         end
     end
     
-    function Class:dispatch(class, name, func, store, fastFunc, ...)
-        assert(Class ~= class, ('Attempt to dispatch function <%s> from prototype <%s>'):format(str(func), self:type()))
-        assert(self:instanceOf(class), ('Attempt to dispatch function <%s> from unrelated class <%s>'):format(str(func), self:type()))
+    function Class:dispatch(class, name, value, store, fastFunc, ...)
+        assert(Class ~= class, ("Attempt to dispatch function <%s> from prototype <%s>"):format(str(func), self:type()))
+        assert(self:instanceOf(class), ("Attempt to dispatch function <%s> from unrelated class <%s>"):format(str(func), self:type()))
         -- First, let's see if we can find a function with a matching signature.
-        local Match = fastFunc or FindMatchingSignature(GenerateSignature(func, name, ...))
+        local Match = fastFunc or value.overloads[GenerateSignature((function() end), name, ...)]
         if Match then
             -- Let's create a new proxy that properly handles protected fields for functional use
             Wrapper = newproxy(true)
@@ -106,7 +102,7 @@ function Class(Identifier, ...)
             end
             WrapperMetatable.__metatable = ('<protected class function wrapper metatable %s>'):format(str(Wrapper))
             
-            Match.ref(Wrapper, ...)
+            Match(Wrapper, ...)
         else
             error(('Unable to dispatch function <%s> with given arguments'):format(name))
         end
@@ -194,11 +190,11 @@ function Class(Identifier, ...)
     end
 
     function Class:type()
-        return Class.id
+        return self.id
     end
     
     function Class:isPrototype()
-        return Class.decl
+        return self.decl
     end
 
     Metatable.__index = function(class, key, store, inFunc)
@@ -207,6 +203,16 @@ function Class(Identifier, ...)
         local Value = store[key]
         
         if Value then
+            -- Let's check if it's an internal function
+            if type(Value) ~= "table" then
+                assert(type(Value) == "function", ("Attempt to access an internal value"))
+                -- We'll need to supply our internal functions with our own store rather than our proxy
+                return (function(class, ...)
+                    Value(store, ...)
+                end)
+            end
+            assert(Value.ref, ("Attempt to access an internal value"))
+            
             -- Now that we have the value, we can validate the traits.
             -- If we're not inside a function, only public fields should be visible.
             if not inFunc then
@@ -220,19 +226,22 @@ function Class(Identifier, ...)
             if Value.traits[DECL_FLAGS.protected] then
                 assert(Class:instanceOf(Value.class), ("Attempt to access protected field <%s>"):format(key))
             end
-            
-            if Value.accessors.get then
+             
+            elseif Value.accessors.get then
                 -- Set our value name for the accessor to use
                 getfenv(Value.accessors.get)[key] = Value.ref
                 return Value.accessors.get()
             elseif type(Value.ref) == 'function' then
-                if #Value.overloads > 1 then
+                if Value.traits[DECL_FLAGS.static] then
+                    -- Return the function as-is
+                    return Value.ref
+                elseif #Value.overloads > 1 then
                     return (function(...)
-                        Class:dispatch(class, key, Value.ref, store, nil, ...)
+                        Class:dispatch(class, key, Value, store, nil, ...)
                     end)
                 else
                     return (function(...)
-                        Class:dispatch(class, key, Value.ref, store, Value.ref, ...)
+                        Class:dispatch(class, key, Value, store, Value.ref, ...)
                     end)
                 end
             else
@@ -250,7 +259,8 @@ function Class(Identifier, ...)
         -- If the value already exists within our class, let's make sure we're not re-declaring it.
         Value = store[key]
         if Value then
-            assert(traits == {}, ('Attempt to declare already-existing field <%s>'):format(key))
+            assert(type(Value) == "table" and Value.ref, ("Attempt to modify an internal value"))
+            assert(traits == {}, ("Attempt to declare already-existing field <%s>"):format(key))
             if Value.accessors.set then
                 -- We have an accessor. Let's fix it's environment and run it.
                 getfenv(Value.accessors.set)['value'] = new
@@ -261,16 +271,25 @@ function Class(Identifier, ...)
                 return
             end
             assert(not Value.traits[DECL_FLAGS.final], ("Attempt to modify final field <%s>"):format(key))
+            store[key].ref = new
         else
+            -- We're dealing with a new value.
             assert(class:isPrototype(), ("Attempt to declare field <%s> outside of prototype"):format(key))
-            -- We're dealing with a new value. First, let's validate the fields.
+            assert(not (traits[DECL_FLAGS.private] and traits[DECL_FLAGS.protected]), ("Private and protected declaration is not permitted"))
+            -- Let's add it to our store.
+            store[key] = {
+                ref        = new 
+                accessors  = {} 
+                overloads  = {}     
+                class      = class 
+                traits     = traits
+            }
         end
         
         
     end
     Metatable.__metatable = ("<protected metatable %s>"):format(str(Proxy))
     
-
     --[[
         Before we return the prototype, we need to properly inherit the given classes.
         We may do this by copying the superclass and appending them to our own with
