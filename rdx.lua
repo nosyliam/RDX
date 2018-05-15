@@ -10,6 +10,20 @@ local DECL_FLAGS = {
 }
 
 local META_OPS = {
+	__len       = {'len', '#'},
+	__unm       = {'unary', 'minus', '--'},
+	__add       = {'add', 'addition', '+'},
+	__sub       = {'sub', 'subtraction', '-'},
+	__mul       = {'mul', 'multiplication', '*'},
+	__div       = {'div', 'division', '/'},
+	__mod       = {'mod', 'modulus', '%'},
+	__pow       = {'pow', 'power', 'exponent', '^'},
+	__lt        = {'lt', 'less', 'lessthan', '<'},
+	__eq        = {'eq', 'equal', 'equals', '='},
+	__le        = {'le', '<='},
+	__concat    = {'concat', 'join', '..'},
+	__call      = {'call', '()', 'exec'},
+	__tostring  = {'tostring', 'str'}
 }
 
 function Class(Identifier, ...)
@@ -26,6 +40,19 @@ function Class(Identifier, ...)
     
     -- Weak table for faster indexing of signatures
     local SignatureCache = setmetatable({}, {__mode = 'kv'})
+    
+    local function DeepCopy(orig)
+        local Copy
+        if type(orig) == 'table' then
+            Copy = {}
+            for key, value in next, orig, nil do
+                Copy[DeepCopy(key)] = DeepCopy(value)
+            end
+        else -- number, string, boolean, etc
+            Copy = orig
+        end
+        return Copy
+    end
 
     --[[
     GenerateSignature will create a signature string with the given class, value name, and
@@ -45,7 +72,7 @@ function Class(Identifier, ...)
             if success then
                 ArgString = ArgString .. ret
             else
-                error(('Unknown userdata <%s> passed as argument to registered function <%s>'):format(str(arg), name))
+                error(('Unknown userdata <%s> passed as argument to registered function <%s>'):format(tostring(arg), name))
             end
         end
         
@@ -65,22 +92,25 @@ function Class(Identifier, ...)
     local function CreateDeclWrapper(class, flag)
         assert(pcall(class.type, class), "Object passed to declarator is not a valid class")
         
-        if (self._decltraits) then
+        if (class._decltraits) then
             -- We're dealing with an existing wrapper. All we need to do is append our trait.
-            self._decltraits[flag] = true
+            class._decltraits[flag] = true
         else
-            local Store = {_decltraits = {flag = true}} 
+            local Store = {_decltraits = {[flag] = true}} 
             local Wrapper = newproxy(true)
-            setmetatable(Wrapper, Metatable)
-            local WrapperMetatable = getmetatable(mt)
-            WrapperMetatable.__metatable = ("<protected trait wrapper metatable %s>"):format(str(Store))
-            WrapperMetatable.__index = function(class, key)
-                return Store[key] or Metatable.__index(Class, key)
+            local WrapperMetatable = getmetatable(Wrapper)
+            WrapperMetatable.__metatable = ("<protected trait wrapper metatable %s>"):format(tostring(Store))
+            WrapperMetatable.__index = function(px, key)
+                return Store[key] or Metatable.__index(class, key)
             end
             
-            WrapperMetatable.__newindex = function(class, key, val)
+            WrapperMetatable.__newindex = function(px, key, val)
                 if Store[key] then Store[key] = val end
-                Metatable.__newindex(class.proxy or Proxy, key, val, Store._decltraits)
+                return Metatable.__newindex(class.proxy or Proxy, key, val, class, Store._decltraits)
+            end
+            
+            for op, _ in pairs(META_OPS) do
+                WrapperMetatable[op] = function(...) return Metatable[op](...) end
             end
             
             return Wrapper
@@ -88,21 +118,24 @@ function Class(Identifier, ...)
     end
     
     function Class:dispatch(class, name, value, store, fastFunc, ...)
-        assert(Class ~= class, ("Attempt to dispatch function <%s> from prototype <%s>"):format(str(func), self:type()))
-        assert(self:instanceOf(class), ("Attempt to dispatch function <%s> from unrelated class <%s>"):format(str(func), self:type()))
+        assert(Proxy ~= class, ("Attempt to dispatch function <%s> from prototype <%s>"):format(tostring(name), self:type()))
+        assert(self:instanceOf(class), ("Attempt to dispatch function <%s> from unrelated class <%s>"):format(tostring(name), self:type()))
         -- First, let's see if we can find a function with a matching signature.
         local Match = fastFunc or value.overloads[GenerateSignature((function() end), name, ...)]
         if Match then
             -- Let's create a new proxy that properly handles protected fields for functional use
             Wrapper = newproxy(true)
-            setmetatable(Wrapper, Metatable)
             WrapperMetatable = getmetatable(Wrapper)
-            WrapperMetatable.__index = function(class, key)
-                Metatable.__index(class, key, store, true)
+            WrapperMetatable.__index = function(px, key)
+                return Metatable.__index(class, key, store, true)
             end
-            WrapperMetatable.__metatable = ('<protected class function wrapper metatable %s>'):format(str(Wrapper))
+            WrapperMetatable.__newindex = function(...) return Metatable.__newindex(...) end
+            WrapperMetatable.__metatable = ('<protected class function wrapper metatable %s>'):format(tostring(Wrapper))
+            for op, _ in pairs(META_OPS) do
+                WrapperMetatable[op] = function(...) return Metatable[op](...) end
+            end
             
-            Match(Wrapper, ...)
+            return Match(Wrapper, ...)
         else
             error(('Unable to dispatch function <%s> with given arguments'):format(name))
         end
@@ -187,6 +220,16 @@ function Class(Identifier, ...)
     end
     
     function Class:instanceOf(proto)
+        if proto == Proxy then return true end
+        if not Class.supers[proto] then
+            for super, _ in pairs(Class.supers) do
+                if super:instanceOf(proto) then
+                    return true
+                end
+            end
+        else
+            return true
+        end
     end
 
     function Class:type()
@@ -196,19 +239,23 @@ function Class(Identifier, ...)
     function Class:isPrototype()
         return self.decl
     end
+    
+    function Class:raw()
+        assert(self:isPrototype())
+        return DeepCopy(Class)
+    end
 
     Metatable.__index = function(class, key, store, inFunc)
         -- First, let's check that we even have the key.
         local store = store or Class
         local Value = store[key]
-        
         if Value then
             -- Let's check if it's an internal function
             if type(Value) ~= "table" then
                 assert(type(Value) == "function", ("Attempt to access an internal value"))
                 -- We'll need to supply our internal functions with our own store rather than our proxy
                 return (function(class, ...)
-                    Value(store, ...)
+                    return Value(store, ...)
                 end)
             end
             assert(Value.ref, ("Attempt to access an internal value"))
@@ -227,7 +274,7 @@ function Class(Identifier, ...)
                 assert(Class:instanceOf(Value.class), ("Attempt to access protected field <%s>"):format(key))
             end
              
-            elseif Value.accessors.get then
+            if Value.accessors.get then
                 -- Set our value name for the accessor to use
                 getfenv(Value.accessors.get)[key] = Value.ref
                 return Value.accessors.get()
@@ -235,32 +282,33 @@ function Class(Identifier, ...)
                 if Value.traits[DECL_FLAGS.static] then
                     -- Return the function as-is
                     return Value.ref
-                elseif #Value.overloads > 1 then
+                elseif #Value.overloads > 0 then
                     return (function(...)
-                        Class:dispatch(class, key, Value, store, nil, ...)
+                        return Class:dispatch(class, key, Value, store, nil, ...)
                     end)
                 else
                     return (function(...)
-                        Class:dispatch(class, key, Value, store, Value.ref, ...)
+                        return Class:dispatch(class, key, Value, store, Value.ref, ...)
                     end)
                 end
             else
                 return Value.ref
             end
         else
-            error(("Object <%s> has no field %s"):format(str(class), key))
+            error(("Object <%s> has no field %s"):format(tostring(class), key))
         end
     end
 
     
     Metatable.__newindex = function(class, key, new, store, traits)
         traits = traits or {}
+        store = store or Class
         
         -- If the value already exists within our class, let's make sure we're not re-declaring it.
         Value = store[key]
         if Value then
             assert(type(Value) == "table" and Value.ref, ("Attempt to modify an internal value"))
-            assert(traits == {}, ("Attempt to declare already-existing field <%s>"):format(key))
+            assert(#traits == 0, ("Attempt to declare already-existing field <%s>"):format(key))
             if Value.accessors.set then
                 -- We have an accessor. Let's fix it's environment and run it.
                 getfenv(Value.accessors.set)['value'] = new
@@ -278,29 +326,43 @@ function Class(Identifier, ...)
             assert(not (traits[DECL_FLAGS.private] and traits[DECL_FLAGS.protected]), ("Private and protected declaration is not permitted"))
             -- Let's add it to our store.
             store[key] = {
-                ref        = new 
-                accessors  = {} 
-                overloads  = {}     
-                class      = class 
-                traits     = traits
+                ref        = new,
+                accessors  = {},
+                overloads  = {},     
+                class      = class, 
+                traits     = traits,
             }
         end
         
         
     end
-    Metatable.__metatable = ("<protected metatable %s>"):format(str(Proxy))
+    Metatable.__metatable = ("<protected metatable %s>"):format(tostring(Proxy))
     
     --[[
         Before we return the prototype, we need to properly inherit the given classes.
         We may do this by copying the superclass and appending them to our own with
-        the appropriate flags. If a function or value has the same signature, an error *will*
-        be thrown.
+        the appropriate flags.
     ]]
-    for _, v in pairs({...}) do
-        assert(pcall(v.type, v), ('Class <%s> passed to constructor is not a valid class'):format(str(v)))
-        local function WalkClass(class) end
-        WalkClass(v)
+    for _, class in pairs({...}) do
+        assert(pcall(class.type, class), ('Class <%s> passed to constructor is not a valid class'):format(tostring(v)))
+        for k, v in pairs(class:raw()) do
+            if type(v) == 'table' and v.ref then
+                Class[k] = {
+                    ref        = v.ref,
+                    accessors  = DeepCopy(v.accessors),
+                    overloads  = DeepCopy(v.overloads),     
+                    class      = class, 
+                    traits     = DeepCopy(v.traits),
+                }
+            end
+        end
+        Class.supers[class] = true
     end
     
     return Proxy
 end
+
+base = Class('test')
+base:protected().a = 5
+derived = Class('derived', base)
+derived.geta = function(self) return self.a end
