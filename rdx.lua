@@ -381,8 +381,3 @@ function Class(Identifier, ...)
     
     return Proxy
 end
-
-base = Class('test')
-base:private().a = 5
-derived = Class('derived', base)
-derived.geta = function(self) return self.a end
