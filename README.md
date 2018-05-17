@@ -17,9 +17,9 @@ hundreds of bug-restricant utility classes.
 
 ```lua
 Base = Class('Base')
-Base:static().apples = 10
-Base:private().bananas = 7
-Base:protected().oranges = 100
+Base.static.apples = 10
+Base.private.bananas = 7
+Base.protected.oranges = 100
 function Base:getBananas()
   return self.bananas
 end

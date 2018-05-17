@@ -103,11 +103,12 @@ function Class(Identifier, ...)
         return Wrapper
     end
     
-    local function CreateDeclWrapper(class, flag)
-        if (class._decltraits) then
+    local function CreateDeclWrapper(class, proxy, flag)
+        if pcall(function() return proxy._decltraits end) then
             -- We're dealing with a trait wrapper. Instead of creating an entirely new wrapper, we may
             -- simply modify the existing traits.
-            class._decltraits[flag] = true
+            proxy._decltraits[flag] = true
+            return proxy
         else
             -- A neat trick we can use to declare fields with traits is wrap our current class with
             -- a __newindex function that passes traits.
@@ -116,12 +117,12 @@ function Class(Identifier, ...)
             local WrapperMetatable = getmetatable(Wrapper)
             WrapperMetatable.__metatable = ("<protected trait wrapper metatable %s>"):format(tostring(Wrapper))
             WrapperMetatable.__index = function(_, key)
-                return Traits[key] or Metatable.__index(class, key)
+                return Traits[key] or Metatable.__index(Wrapper, key, class)
             end
             
             WrapperMetatable.__newindex = function(_, key, val)
                 if Traits[key] then Traits[key] = val end
-                return Metatable.__newindex(class.proxy or Proxy, key, val, class, Traits._decltraits)
+                return Metatable.__newindex(Wrapper, key, val, class, Traits._decltraits)
             end
             
             for op, _ in pairs(META_OPS) do
@@ -164,7 +165,7 @@ function Class(Identifier, ...)
         assert(self:isPrototype(), ("Attempt to declare property <%s> outside of prototype"):format(name))
         assert(not self[name], ("Attempt to declare already-existing field <%s>"):format(name))
         
-        local traits = self:declTraits()
+        -- traits is automatically set by __index
         assert(not (traits[DECL_FLAGS.private] and traits[DECL_FLAGS.protected]), ("Private and protected declaration is not permitted"))
         
         -- We can now proceed to storing our property as normal
@@ -175,36 +176,6 @@ function Class(Identifier, ...)
             class      = self.proxy or Proxy, 
             traits     = traits,
         }
-    end
-    
-    --[[
-    Class:[private, protected, virtual, final, static]() are syntactic sugars for
-    declaring fields and functions. A wrapper of the class is returned
-    that associates any modification with the given trait.
-    
-    e.g. foo.private.secret = 0xDEADBEEF
-    Wrappers may also be stacked, e.g. foo.private.virtual.secret = 0xDEADBEEF
-    Functions are able to use a "sweeter" syntax, e.g.
-    foo:private().secret = function(self) [...] end
-    ]]
-    function Class:private()
-        return CreateDeclWrapper(self, DECL_FLAGS.private)
-    end
-    
-    function Class:virtual()
-        return CreateDeclWrapper(self, DECL_FLAGS.virtual)
-    end
-    
-    function Class:protected()
-        return CreateDeclWrapper(self, DECL_FLAGS.protected)
-    end
-    
-    function Class:static()
-        return CreateDeclWrapper(self, DECL_FLAGS.static)
-    end
-    
-    function Class:final()
-        return CreateDeclWrapper(self, DECL_FLAGS.final)
     end
     
     --[[
@@ -275,14 +246,6 @@ function Class(Identifier, ...)
         return self.decl
     end
     
-    function Class:declTraits()
-        success, result = pcall(function() 
-            return self._decltraits 
-        end)
-        
-        return result or {}
-    end
-    
     function Class:raw()
         assert(self:isPrototype())
         return DeepCopy(Class)
@@ -302,6 +265,11 @@ function Class(Identifier, ...)
                 -- to access internal class fields. To remedy this, we can call functions inside
                 -- a wrapper with the class as we have it in our scope.
                 return (function(proxy, ...)
+                    -- For functions such as :property, we need to make sure they have our proxy's held traits.
+                    success, value = pcall(function()
+                        return proxy._decltraits
+                    end)
+                    getfenv(Value)["traits"] = value or {}
                     return Value(classObject, ...)
                 end)
             end
@@ -309,6 +277,7 @@ function Class(Identifier, ...)
             
             -- If we are not inside a function, then we may only access public fields.
             if not inFunc and (not proxy:isPrototype()) then
+                print(Value.traits[DECL_FLAGS.virtual])
                 assert(not Value.traits[DECL_FLAGS.private], ("Attempt to access private field <%s>"):format(key))
                 assert(not Value.traits[DECL_FLAGS.protected], ("Attempt to access protected field <%s>"):format(key))
             end
@@ -326,7 +295,12 @@ function Class(Identifier, ...)
                 assert((not proxy:isPrototype()) or Value.traits[DECL_FLAGS.static], ("Attempt to access non-static property <%s> in prototype <%s>"):format(key, proxy:type()))
                 -- Set our function's environment so that it may access the indexed value for further computation.
                 getfenv(Value.accessors.get)[key] = Value.ref
-                return Value.accessors.get(CreateFunctionWrapper(proxy, classObject))
+                -- If the field is a wrapper for a trait, then we need to pass our classObject.
+                if DECL_FLAGS[key] then
+                    return Value.accessors.get(classObject, proxy)
+                else
+                    return Value.accessors.get(CreateFunctionWrapper(proxy, classObject))
+                end
             elseif type(Value.ref) == 'function' then
                 if Value.traits[DECL_FLAGS.static] then
                     return Value.ref
@@ -396,6 +370,22 @@ function Class(Identifier, ...)
     Metatable.__tostring = function(class) return ("<class %s>"):format(Identifier) end
     
     --[[
+    Class.[private, protected, virtual, final, static]() are syntactic sugars for
+    declaring fields and functions. A wrapper of the class is returned
+    that associates any modification with the given trait.
+    
+    e.g. foo.private.secret = 0xDEADBEEF
+    Wrappers may also be stacked, e.g. foo.private.virtual.secret = 0xDEADBEEF
+    ]]
+    local TraitWrapper = CreateDeclWrapper(Class, Proxy, DECL_FLAGS.static)
+    CreateDeclWrapper(Class, TraitWrapper, DECL_FLAGS.final)
+    TraitWrapper:property('private', {get = function(self, proxy) return CreateDeclWrapper(self, proxy, DECL_FLAGS.private) end, set = function() end})
+    TraitWrapper:property('protected', {get = function(self, proxy) return CreateDeclWrapper(self, proxy, DECL_FLAGS.protected) end, set = function() end})
+    TraitWrapper:property('virtual', {get = function(self, proxy) return CreateDeclWrapper(self, proxy, DECL_FLAGS.virtual) end, set = function() end})
+    TraitWrapper:property('static', {get = function(self, proxy) return CreateDeclWrapper(self, proxy, DECL_FLAGS.static) end, set = function() end})  
+    TraitWrapper:property('final', {get = function(self, proxy) return CreateDeclWrapper(self, proxy, DECL_FLAGS.final) end, set = function() end})
+    
+    --[[
         Before we return the prototype, we need to properly inherit the given classes.
         We may do this by copying the superclass's fields and appending them to our own.
     ]]
@@ -419,6 +409,10 @@ function Class(Identifier, ...)
 end
 
 base = Class('base')
+base.private.virtual.a = 5
+base.private.geta = function(self)
+    print(self.a)
+end
 base:property('b', {
     get = function() return b + 100 end;
     set = function() b = value - 10 end;
@@ -428,3 +422,4 @@ baseObject = base:new()
 print(baseObject.b) -- 150
 baseObject.b = 100
 print(baseObject.b) -- 190
+print(baseObject.a)
