@@ -53,16 +53,21 @@ function Class(Identifier, ...)
         end
         return Copy
     end
+    
+    local function TableSize(tbl)
+        local Count = 0
+        for _ in pairs(tbl) do 
+            Count = Count + 1 
+        end
+        return Count
+    end
 
     --[[
     GenerateSignature will create a signature string with the given class, value name, and
     further arguments. Similar to C++, signatures are key to ensuring that functions with the
     same name or overloads are properly differentiated by the dispatcher.
     ]]
-    local function GenerateSignature(ref, class, name, ...)
-        -- Because identical functions are guaranteed to produce the same signature, we can
-        -- store and retrieve signatures from a cache to save unnecessary computation.
-        if SignatureCache[ref] then return SignatureCache[ref] end
+    local function GenerateSignature(name, ...)
         local Signature = name
         for _, arg in pairs({...}) do
             -- Because we do not want to handle builtin datatypes in general, we must extend our coverage to
@@ -80,7 +85,6 @@ function Class(Identifier, ...)
             end
         end
         
-        SignatureCache[ref] = Signature
         return Signature
     end
     
@@ -137,10 +141,15 @@ function Class(Identifier, ...)
         assert(Proxy ~= proxy, ("Attempt to dispatch function <%s> from prototype <%s>"):format(tostring(name), self:type()))
         assert(self:instanceOf(proxy), ("Attempt to dispatch function <%s> from unrelated class <%s>"):format(tostring(name), self:type()))
         -- We can either use the function provided by fastFunc or the function overloads.
-        local Match = fastFunc or value.overloads[GenerateSignature((function() --[[ placeholder function ]] end), name, ...)]
+        local Args = {...}
+        if Args[1] == proxy then
+            table.remove(Args, 1)
+        end
+        local Match = fastFunc or value.overloads[GenerateSignature(name, unpack(Args))]
         if Match then
+            -- If the 
             -- Call the function and return!
-            return Match(CreateFunctionWrapper(proxy, class), ...)
+            return Match(CreateFunctionWrapper(proxy, class), unpack(Args))
         else
             error(('Unable to dispatch function <%s> with given arguments'):format(name))
         end
@@ -174,8 +183,38 @@ function Class(Identifier, ...)
             accessors  = accessors,
             overloads  = {},     
             class      = self.proxy or Proxy, 
-            traits     = traits,
+            traits     = traits
         }
+    end
+    
+    function Class:overload(name, ...)
+        local Function = select(select("#", ...), ...)
+        -- Before anything, we need to proceed with proper assertions
+        assert(type(Function) == "function", ("Final argument of :overload is not a function"))
+        assert(self:isPrototype(), ("Attempt to declare overload <%s> outside of prototype"):format(name))
+        assert(not (traits[DECL_FLAGS.private] and traits[DECL_FLAGS.protected]), ("Private and protected declaration is not permitted"))
+        
+        -- Generate a signature through the middle arguments, e.g (name, ... = [Number, String], function)
+        local Args = {...}
+        table.remove(Args)
+        local Signature = GenerateSignature(name, unpack(Args))
+        
+        -- A field prototype can only be an overload if it has more than one overload defined. A regular
+        -- function may not be converted into an overload.
+        local Value = self[name]
+        if Value then
+            assert(type(Value.ref) == "function" and TableSize(Value.overloads) >= 1, ("Attempt to declare function <%s> as overload"):format(name))
+            Value.overloads[Signature] = Function
+        else
+            self[name] = {
+                ref        = (function() --[[ placeholder function ]] end),
+                accessors  = {},
+                overloads  = {[Signature] = Function},     
+                class      = self.proxy or Proxy, 
+                traits     = traits
+            }
+        end
+        
     end
     
     --[[
@@ -204,6 +243,7 @@ function Class(Identifier, ...)
         end
         
         NewClass.proxy = NewProxy
+        NewClass.proto = Proxy
         return NewProxy
     end
 
@@ -226,7 +266,7 @@ function Class(Identifier, ...)
     function Class:instanceOf(proto)
         -- Because :instanceOf is only being called from outside builtin functions, we must
         -- compare our proxy rather than the actual class.
-        if proto == Proxy then return true end
+        if proto:getPrototype() == Proxy then return true end
         if not Class.supers[proto] then
             for super, _ in pairs(Class.supers) do
                 if super:instanceOf(proto) then
@@ -244,6 +284,10 @@ function Class(Identifier, ...)
     
     function Class:isPrototype()
         return self.decl
+    end
+    
+    function Class:getPrototype()  
+        return self.proto or Proxy
     end
     
     function Class:raw()
@@ -277,7 +321,6 @@ function Class(Identifier, ...)
             
             -- If we are not inside a function, then we may only access public fields.
             if not inFunc and (not proxy:isPrototype()) then
-                print(Value.traits[DECL_FLAGS.virtual])
                 assert(not Value.traits[DECL_FLAGS.private], ("Attempt to access private field <%s>"):format(key))
                 assert(not Value.traits[DECL_FLAGS.protected], ("Attempt to access protected field <%s>"):format(key))
             end
@@ -304,7 +347,7 @@ function Class(Identifier, ...)
             elseif type(Value.ref) == 'function' then
                 if Value.traits[DECL_FLAGS.static] then
                     return Value.ref
-                elseif #Value.overloads > 0 then
+                elseif TableSize(Value.overloads) > 0 then
                     return (function(...)
                         return Class:dispatch(proxy, key, Value, classObject, nil, ...)
                     end)
@@ -407,19 +450,3 @@ function Class(Identifier, ...)
     
     return Proxy
 end
-
-base = Class('base')
-base.private.virtual.a = 5
-base.private.geta = function(self)
-    print(self.a)
-end
-base:property('b', {
-    get = function() return b + 100 end;
-    set = function() b = value - 10 end;
-    default = 50
-})
-baseObject = base:new()
-print(baseObject.b) -- 150
-baseObject.b = 100
-print(baseObject.b) -- 190
-print(baseObject.a)
