@@ -34,30 +34,30 @@ function Class(Identifier, ...)
     of the class into a proxy is that any form of index will *always* be triggered and subsequently validated.
     ]]
     local Class = {originalId = Identifier, id = Identifier, supers = {}, decl = true, _decltraits = 0}
-    local Proxy = newproxy(true)
-    local Metatable = getmetatable(Proxy)
+    local Prototype = newproxy(true)
+    local Metatable = getmetatable(Prototype)
     local Overrides = {}
     
     -- Utility functions
     local function DeepCopy(orig)
-        local Copy
+        local copy
         if type(orig) == 'table' then
-            Copy = {}
+            copy = {}
             for key, value in next, orig, nil do
-                Copy[DeepCopy(key)] = DeepCopy(value)
+                copy[DeepCopy(key)] = DeepCopy(value)
             end
         else -- number, string, boolean, etc
-            Copy = orig
+            copy = orig
         end
-        return Copy
+        return copy
     end
     
     local function TableSize(tbl)
-        local Count = 0
+        local count = 0
         for _ in pairs(tbl) do 
-            Count = Count + 1 
+            count = count + 1 
         end
-        return Count
+        return count
     end
     
     local function FindOpFromAlias(op)
@@ -76,7 +76,7 @@ function Class(Identifier, ...)
     same name or overloads are properly differentiated by the dispatcher.
     ]]
     local function GenerateSignature(name, ...)
-        local Signature = name
+        local signature = name
         for _, arg in pairs({...}) do
             -- Because we do not want to handle builtin datatypes in general, we must extend our coverage to
             -- ROBLOX types alongside Lua types. All ROBLOX datatypes are assumed to be tables.
@@ -87,13 +87,13 @@ function Class(Identifier, ...)
             assert(type(arg) == "userdata", ('Registered function <%s> may not use builtin type <%s> as argument'):format(name, type(arg)))
             success, ret = pcall(arg.type, arg)
             if success then
-                Signature = Signature .. ret
+                signature = signature .. ret
             else
                 error(('Unknown userdata <%s> passed as argument to registered function <%s>'):format(tostring(arg), name))
             end
         end
         
-        return Signature
+        return signature
     end
     
     --[[
@@ -101,18 +101,18 @@ function Class(Identifier, ...)
     any index operation that w are inside a function as to allow for the access of private and protected fields.
     ]]
     function CreateFunctionWrapper(proxy, class)
-        Wrapper = newproxy(true)
-        WrapperMetatable = getmetatable(Wrapper)
-        WrapperMetatable.__index = function(_, key)
+        wrapper = newproxy(true)
+        wrapperMetatable = getmetatable(wrapper)
+        wrapperMetatable.__index = function(_, key)
             return Metatable.__index(proxy, key, class, true)
         end
-        WrapperMetatable.__newindex = function(_, ...) return Metatable.__newindex(proxy, ...) end
-        WrapperMetatable.__metatable = ('<protected class function wrapper metatable %s>'):format(tostring(Wrapper))
+        wrapperMetatable.__newindex = function(_, ...) return Metatable.__newindex(proxy, ...) end
+        wrapperMetatable.__metatable = ('<protected class function wrapper metatable %s>'):format(tostring(wrapper))
         for op, _ in pairs(META_OPS) do
-            WrapperMetatable[op] = function(_, ...) return Metatable[op](proxy, ...) end
+            wrapperMetatable[op] = function(_, ...) return Metatable[op](proxy, ...) end
         end
         
-        return Wrapper
+        return wrapper
     end
     
     local function CreateDeclWrapper(class, proxy, flag)
@@ -124,40 +124,41 @@ function Class(Identifier, ...)
         else
             -- A neat trick we can use to declare fields with traits is wrap our current class with
             -- a __newindex function that passes traits.
-            local Traits = {_decltraits = {[flag] = true}} 
-            local Wrapper = newproxy(true)
-            local WrapperMetatable = getmetatable(Wrapper)
-            WrapperMetatable.__metatable = ("<protected trait wrapper metatable %s>"):format(tostring(Wrapper))
-            WrapperMetatable.__index = function(_, key)
-                return Traits[key] or Metatable.__index(Wrapper, key, class)
+            local traits = {_decltraits = {[flag] = true}} 
+            local wrapper = newproxy(true)
+            local wrapperMetatable = getmetatable(Wrapper)
+            wrapperMetatable.__metatable = ("<protected trait wrapper metatable %s>"):format(tostring(wrapper))
+            wrapperMetatable.__index = function(_, key)
+                return traits[key] or Metatable.__index(wrapper, key, class)
             end
             
-            WrapperMetatable.__newindex = function(_, key, val)
-                if Traits[key] then Traits[key] = val end
-                return Metatable.__newindex(Wrapper, key, val, class, Traits._decltraits)
+            wrapperMetatable.__newindex = function(_, key, val)
+                if traits[key] then traits[key] = val end
+                return Metatable.__newindex(wrapper, key, val, class, traits._decltraits)
             end
             
             for op, _ in pairs(META_OPS) do
-                WrapperMetatable[op] = function(...) return Metatable[op](...) end
+                wrapperMetatable[op] = function(...) return Metatable[op](...) end
             end
             
-            return Wrapper
+            return wrapper
         end
     end
     
     function Class:dispatch(proxy, name, value, class, fastFunc, ...)
-        assert(Proxy ~= proxy, ("Attempt to dispatch function <%s> from prototype <%s>"):format(tostring(name), self:type()))
+        assert(Prototype ~= proxy, ("Attempt to dispatch function <%s> from prototype <%s>"):format(tostring(name), self:type()))
         assert(self:instanceOf(proxy), ("Attempt to dispatch function <%s> from unrelated class <%s>"):format(tostring(name), self:type()))
-        -- We can either use the function provided by fastFunc or the function overloads.
-        local Args = {...}
-        if Args[1] == proxy then
-            table.remove(Args, 1)
+        -- If the function was called by : we need to remove the proxy provided
+        -- by Lua and replace it with a function wrapper
+        local args = {...}
+        if args[1] == proxy then
+            table.remove(args, 1)
         end
-        local Match = fastFunc or value.overloads[GenerateSignature(name, unpack(Args))]
-        if Match then
-            -- If the 
+        -- We can either use the function provided by fastFunc or the function overloads.
+        local match = fastFunc or value.overloads[GenerateSignature(name, unpack(args))]
+        if match then
             -- Call the function and return!
-            return Match(CreateFunctionWrapper(proxy, class), unpack(Args))
+            return match(CreateFunctionWrapper(proxy, class), unpack(args))
         else
             error(('Unable to dispatch function <%s> with given arguments'):format(name))
         end
@@ -190,13 +191,13 @@ function Class(Identifier, ...)
             ref        = accessors.default or 0,
             accessors  = accessors,
             overloads  = {},     
-            class      = self.proxy or Proxy, 
+            class      = self.proxy or Prototype, 
             traits     = traits
         }
     end
     
     function Class:overload(name, ...)
-        local Function = select(select("#", ...), ...)
+        local func = select(select("#", ...), ...)
         -- Before anything, we need to proceed with proper assertions
         assert(type(Function) == "function", ("Final argument of :overload is not a function"))
         assert(self:isPrototype(), ("Attempt to declare overload <%s> outside of prototype"):format(name))
@@ -204,22 +205,22 @@ function Class(Identifier, ...)
         assert(not (traits[DECL_FLAGS.static]), ("Static declaration is not permitted for overloads"))
         
         -- Generate a signature through the middle arguments, e.g (name, ... = [Number, String], function)
-        local Args = {...}
-        table.remove(Args)
-        local Signature = GenerateSignature(name, unpack(Args))
+        local args = {...}
+        table.remove(args)
+        local signature = GenerateSignature(name, unpack(args))
         
         -- A field prototype can only be an overload if it has more than one overload defined. A regular
         -- function may not be converted into an overload.
-        local Value = self[name]
-        if Value then
-            assert(type(Value.ref) == "function" and TableSize(Value.overloads) >= 1, ("Attempt to declare function <%s> as overload"):format(name))
-            Value.overloads[Signature] = Function
+        local value = self[name]
+        if value then
+            assert(type(value.ref) == "function" and TableSize(value.overloads) >= 1, ("Attempt to declare function <%s> as overload"):format(name))
+            value.overloads[signature] = func
         else
             self[name] = {
                 ref        = (function() --[[ placeholder function ]] end),
                 accessors  = {},
-                overloads  = {[Signature] = Function},     
-                class      = self.proxy or Proxy, 
+                overloads  = {[signature] = func},     
+                class      = self.proxy or Prototype, 
                 traits     = traits
             }
         end
@@ -233,32 +234,32 @@ function Class(Identifier, ...)
     ]]
     function Class:new(...)
         assert(self:isPrototype())
-        local NewClass = DeepCopy(Class)
-        NewClass.decl = false
+        local newClass = DeepCopy(Class)
+        newClass.decl = false
         
-        local NewProxy = newproxy(true)
-        local ProxyMetatable = getmetatable(NewProxy)
+        local newProxy = newproxy(true)
+        local proxyMetatable = getmetatable(newProxy)
         -- In order for __index to use the new class rather than the prototype, we must
         -- forward the class in the classObject argument.
-        ProxyMetatable.__index = function(_, key)
-            return Metatable.__index(NewProxy, key, NewClass)
+        proxyMetatable.__index = function(_, key)
+            return Metatable.__index(newProxy, key, newClass)
         end
-        ProxyMetatable.__newindex = function(_, key, new)
-            return Metatable.__newindex(NewProxy, key, new, NewClass)
+        proxyMetatable.__newindex = function(_, key, new)
+            return Metatable.__newindex(newProxy, key, new, newClass)
         end
         
         for op, _ in pairs(META_OPS) do
-            ProxyMetatable[op] = (function(...) return Metatable[op](...) end)
+            proxyMetatable[op] = (function(...) return Metatable[op](...) end)
         end
         
-        NewClass.proxy = NewProxy
-        NewClass.proto = Proxy
+        newClass.proxy = NewProxy
+        newClass.proto = Prototype
         
         -- Call the class's constructor if it has one
-        if NewClass:hasFunction("construct") then
-            NewProxy:construct(...)
+        if newClass:hasFunction("construct") then
+            newProxy:construct(...)
         end
-        return NewProxy
+        return newProxy
     end
 
     --[[
@@ -285,7 +286,7 @@ function Class(Identifier, ...)
     function Class:instanceOf(proto)
         -- Because :instanceOf is only being called from outside builtin functions, we must
         -- compare our proxy rather than the actual class.
-        if proto:getPrototype() == Proxy then return true end
+        if proto:getPrototype() == Prototype then return true end
         if not Class.supers[proto] then
             for super, _ in pairs(Class.supers) do
                 if super:instanceOf(proto) then
@@ -306,7 +307,7 @@ function Class(Identifier, ...)
     end
     
     function Class:getPrototype()  
-        return self.proto or Proxy
+        return self.proto or Prototype
     end
     
     function Class:rep()
@@ -318,9 +319,9 @@ function Class(Identifier, ...)
     end
     
     function Class:hasFunction(field)
-        local Field = self[field]
-        if Field then
-            return type(Field.ref) == "function" and TableSize(Field.overloads) == 0
+        local field = self[field]
+        if field then
+            return type(field.ref) == "function" and TableSize(field.overloads) == 0
         end
     end
     
@@ -332,69 +333,69 @@ function Class(Identifier, ...)
     Metatable.__index = function(proxy, key, classObject, inFunc)
         -- First, let's check that we have the key in our store.
         local classObject = classObject or Class
-        local Value = classObject[key]
-        if Value then
+        local value = classObject[key]
+        if value then
             -- Before we do anything, we need to check if the value should remain internal.
             -- We can do this by verifying that the value is a valid field container or a
             -- function if not (in which case we wrap it).
-            if type(Value) ~= "table" then
-                assert(type(Value) == "function", ("Attempt to access an internal value"))
+            if type(value) ~= "table" then
+                assert(type(value) == "function", ("Attempt to access an internal value"))
                 -- We won't be able to properly call builtin functions without being able
                 -- to access internal class fields. To remedy this, we can call functions inside
                 -- a wrapper with the class as we have it in our scope.
                 return (function(proxy, ...)
                     -- For functions such as :property, we need to make sure they have our proxy's held traits.
-                    success, value = pcall(function()
+                    success, traits = pcall(function()
                         return proxy._decltraits
                     end)
-                    getfenv(Value)["traits"] = value or {}
-                    return Value(classObject, ...)
+                    getfenv(value)["traits"] = traits or {}
+                    return value(classObject, ...)
                 end)
             end
-            assert(Value.accessors, ("Attempt to access an internal value"))
+            assert(value.accessors, ("Attempt to access an internal value"))
             
             -- If we are not inside a function, then we may only access public fields.
             if not inFunc and (not proxy:isPrototype()) then
-                assert(not Value.traits[DECL_FLAGS.private], ("Attempt to access private field <%s>"):format(key))
-                assert(not Value.traits[DECL_FLAGS.protected], ("Attempt to access protected field <%s>"):format(key))
+                assert(not value.traits[DECL_FLAGS.private], ("Attempt to access private field <%s>"):format(key))
+                assert(not value.traits[DECL_FLAGS.protected], ("Attempt to access protected field <%s>"):format(key))
             end
             
             -- If we are inside a function, then we are allowed to access private fields of our own class and
             -- protected fields from superclasses. This does not apply to prototypes.
-            if Value.traits[DECL_FLAGS.private] and (not proxy:isPrototype()) then
-                assert(Value.class == Proxy, ("Attempt to access private field <%s>"):format(key)) 
+            if value.traits[DECL_FLAGS.private] and (not proxy:isPrototype()) then
+                assert(value.class == Prototype, ("Attempt to access private field <%s>"):format(key)) 
             end
-            if Value.traits[DECL_FLAGS.protected] then
-                assert(Class:instanceOf(Value.class), ("Attempt to access protected field <%s>"):format(key))
+            if value.traits[DECL_FLAGS.protected] then
+                assert(Class:instanceOf(value.class), ("Attempt to access protected field <%s>"):format(key))
             end
              
-            if Value.accessors.get then
-                assert((not proxy:isPrototype()) or Value.traits[DECL_FLAGS.static], ("Attempt to access non-static property <%s> in prototype <%s>"):format(key, proxy:type()))
+            if value.accessors.get then
+                assert((not proxy:isPrototype()) or value.traits[DECL_FLAGS.static], ("Attempt to access non-static property <%s> in prototype <%s>"):format(key, proxy:type()))
                 -- Set our function's environment so that it may access the indexed value for further computation.
-                getfenv(Value.accessors.get)[key] = Value.ref
+                getfenv(value.accessors.get)[key] = value.ref
                 -- If the field is a wrapper for a trait, then we need to pass our classObject.
                 if DECL_FLAGS[key] then
-                    return Value.accessors.get(classObject, proxy)
+                    return value.accessors.get(classObject, proxy)
                 else
-                    return Value.accessors.get(CreateFunctionWrapper(proxy, classObject))
+                    return value.accessors.get(CreateFunctionWrapper(proxy, classObject))
                 end
-            elseif type(Value.ref) == 'function' then
-                if Value.traits[DECL_FLAGS.static] then
-                    return Value.ref
-                elseif TableSize(Value.overloads) > 0 then
+            elseif type(value.ref) == 'function' then
+                if value.traits[DECL_FLAGS.static] then
+                    return value.ref
+                elseif TableSize(value.overloads) > 0 then
                     return (function(...)
-                        return Class:dispatch(proxy, key, Value, classObject, nil, ...)
+                        return Class:dispatch(proxy, key, value, classObject, nil, ...)
                     end)
                 else
                     -- If the function does not have any overloads and is not static, then we can dispatch it normally.
                     -- In this case, :dispatch is called with the `fastFunc` argument which ignores signature checking
                     -- and proceeds directly to the wrapping and execution of the function.
                     return (function(...)
-                        return Class:dispatch(proxy, key, Value, classObject, Value.ref, ...)
+                        return Class:dispatch(proxy, key, value, classObject, value.ref, ...)
                     end)
                 end
             else
-                return Value.ref
+                return value.ref
             end
         else
             error(("Object %s has no field %s"):format(proxy:rep(), key))
@@ -407,21 +408,21 @@ function Class(Identifier, ...)
         classObject = classObject or Class
         
         -- If the value already exists within our class, let's make sure we're not re-declaring it.
-        Value = classObject[key]
-        if Value then
+        value = classObject[key]
+        if value then
             -- Internal values, especially decl, should be readonly. As described in __index, we may verify that
             -- the value is not internal by verifying that it is a field prototype.
-            assert(type(Value) == "table" and Value.accessors, ("Attempt to modify an internal value"))
+            assert(type(value) == "table" and value.accessors, ("Attempt to modify an internal value"))
             assert(#traits == 0, ("Attempt to declare already-existing field <%s>"):format(key))
-            assert(not Value.traits[DECL_FLAGS.final], ("Attempt to modify final field <%s>"):format(key))
-            if Value.accessors.set then
+            assert(not value.traits[DECL_FLAGS.final], ("Attempt to modify final field <%s>"):format(key))
+            if value.accessors.set then
                 -- Set accessors are given the function environment variables value, a placeholder retrieved
                 -- as the final value, and the value name as a reference to the actual value.
-                getfenv(Value.accessors.set)['value'] = new
-                getfenv(Value.accessors.set)[key] = Value.ref
-                Value.accessors.set()
+                getfenv(value.accessors.set)['value'] = new
+                getfenv(value.accessors.set)[key] = value.ref
+                value.accessors.set()
                 -- After calling the accessor, any change to value is assumed to be registered in the function's environment
-                classObject[key].ref = getfenv(Value.accessors.set)[key]
+                classObject[key].ref = getfenv(value.accessors.set)[key]
                 return
             end
 
@@ -436,14 +437,14 @@ function Class(Identifier, ...)
                 ref        = new,
                 accessors  = {},
                 overloads  = {},     
-                class      = classObject.proxy or Proxy, 
+                class      = classObject.proxy or Prototype, 
                 traits     = traits,
             }
         end
         
         
     end
-    Metatable.__metatable = ("<protected metatable %s>"):format(tostring(Proxy))
+    Metatable.__metatable = ("<protected metatable %s>"):format(tostring(Prototype))
     Metatable.__tostring = function(class) return ("<class %s>"):format(Identifier) end
     
     --[[
@@ -454,7 +455,7 @@ function Class(Identifier, ...)
     e.g. foo.private.secret = 0xDEADBEEF
     Wrappers may also be stacked, e.g. foo.private.virtual.secret = 0xDEADBEEF
     ]]
-    local TraitWrapper = CreateDeclWrapper(Class, Proxy, DECL_FLAGS.static)
+    local TraitWrapper = CreateDeclWrapper(Class, Prototype, DECL_FLAGS.static)
     CreateDeclWrapper(Class, TraitWrapper, DECL_FLAGS.final)
     TraitWrapper:property('private', {get = function(self, proxy) return CreateDeclWrapper(self, proxy, DECL_FLAGS.private) end, set = function() end})
     TraitWrapper:property('protected', {get = function(self, proxy) return CreateDeclWrapper(self, proxy, DECL_FLAGS.protected) end, set = function() end})
@@ -475,18 +476,11 @@ function Class(Identifier, ...)
                     accessors  = DeepCopy(v.accessors),
                     overloads  = DeepCopy(v.overloads),     
                     class      = class, 
-                    traits     = DeepCopy(v.traits),
                 }
             end
         end
         Class.supers[class] = true
     end
     
-    return Proxy
+    return Prototype
 end
-
-test = Class('test')
-function test:construct(val, v)
-    print(val, v)
-end
-test:new("c", "d")
