@@ -33,14 +33,12 @@ function Class(Identifier, ...)
     storing functions, values, and references. The benefit of diverging the metatable
     of the class into a proxy is that any form of index will *always* be triggered and subsequently validated.
     ]]
-    local Class = {originalId = Identifier, id = Identifier, supers = {}, decl = true}
+    local Class = {originalId = Identifier, id = Identifier, supers = {}, decl = true, _decltraits = 0}
     local Proxy = newproxy(true)
     local Metatable = getmetatable(Proxy)
     local Overrides = {}
     
-    -- Weak table for faster indexing of signatures
-    local SignatureCache = setmetatable({}, {__mode = 'kv'})
-    
+    -- Utility functions
     local function DeepCopy(orig)
         local Copy
         if type(orig) == 'table' then
@@ -60,6 +58,16 @@ function Class(Identifier, ...)
             Count = Count + 1 
         end
         return Count
+    end
+    
+    local function FindOpFromAlias(op)
+        for realop, aliases in pairs(META_OPS) do
+            for _, alias in pairs(aliases) do
+                if alias == op then
+                    return realop
+                end
+            end
+        end
     end
 
     --[[
@@ -98,10 +106,10 @@ function Class(Identifier, ...)
         WrapperMetatable.__index = function(_, key)
             return Metatable.__index(proxy, key, class, true)
         end
-        WrapperMetatable.__newindex = function(...) return Metatable.__newindex(...) end
+        WrapperMetatable.__newindex = function(_, ...) return Metatable.__newindex(proxy, ...) end
         WrapperMetatable.__metatable = ('<protected class function wrapper metatable %s>'):format(tostring(Wrapper))
         for op, _ in pairs(META_OPS) do
-            WrapperMetatable[op] = function(...) return Metatable[op](...) end
+            WrapperMetatable[op] = function(_, ...) return Metatable[op](proxy, ...) end
         end
         
         return Wrapper
@@ -193,6 +201,7 @@ function Class(Identifier, ...)
         assert(type(Function) == "function", ("Final argument of :overload is not a function"))
         assert(self:isPrototype(), ("Attempt to declare overload <%s> outside of prototype"):format(name))
         assert(not (traits[DECL_FLAGS.private] and traits[DECL_FLAGS.protected]), ("Private and protected declaration is not permitted"))
+        assert(not (traits[DECL_FLAGS.static]), ("Static declaration is not permitted for overloads"))
         
         -- Generate a signature through the middle arguments, e.g (name, ... = [Number, String], function)
         local Args = {...}
@@ -248,19 +257,24 @@ function Class(Identifier, ...)
     end
 
     --[[
-    Class:cast will attempt to cast the current object into the given prototype. If proto is not a direct
-    ancestor or was not previously a descendant, an error will be thrown. Instead of permanently converting 
-    the current object, a proxy is returned that will forward any meta operation to proto. 
+    Class:override will create a function override on the given metamethod. This is useful for
+    utility classes such as strings, which can use the addition operator to join strings.
     ]]
-    function Class:cast(proto)
-        
-    end
-    
     function Class:override(op, func)
+        local op = FindOpFromAlias(op)
+        assert(self:isPrototype(), ("Attempt to modify metamethod <%s> outside of prototype"):format(op))
+        assert(op, ("Unable to override unknown metamethod alias <%s>"):format(op))
+        if func then
+            Metatable[op] = (function(proxy, ...)
+                return func(CreateFunctionWrapper(proxy, self), ...)
+            end)
+        else
+            Metatable[op] = nil
+        end
     end
     
-    -- Remove override on op
     function Class:revert(op)
+        self:override(op, nil)
     end
     
     function Class:instanceOf(proto)
@@ -290,6 +304,10 @@ function Class(Identifier, ...)
         return self.proto or Proxy
     end
     
+    function Class:rep()
+        return ("<class %s>"):format(Identifier)
+    end
+    
     function Class:raw()
         assert(self:isPrototype())
         return DeepCopy(Class)
@@ -317,7 +335,7 @@ function Class(Identifier, ...)
                     return Value(classObject, ...)
                 end)
             end
-            assert(Value.ref, ("Attempt to access an internal value"))
+            assert(Value.accessors, ("Attempt to access an internal value"))
             
             -- If we are not inside a function, then we may only access public fields.
             if not inFunc and (not proxy:isPrototype()) then
@@ -363,7 +381,7 @@ function Class(Identifier, ...)
                 return Value.ref
             end
         else
-            error(("Object <%s> has no field %s"):format(tostring(proxy), key))
+            error(("Object %s has no field %s"):format(proxy:rep(), key))
         end
     end
 
@@ -377,7 +395,7 @@ function Class(Identifier, ...)
         if Value then
             -- Internal values, especially decl, should be readonly. As described in __index, we may verify that
             -- the value is not internal by verifying that it is a field prototype.
-            assert(type(Value) == "table" and Value.ref, ("Attempt to modify an internal value"))
+            assert(type(Value) == "table" and Value.accessors, ("Attempt to modify an internal value"))
             assert(#traits == 0, ("Attempt to declare already-existing field <%s>"):format(key))
             assert(not Value.traits[DECL_FLAGS.final], ("Attempt to modify final field <%s>"):format(key))
             if Value.accessors.set then
