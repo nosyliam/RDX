@@ -231,7 +231,7 @@ function Class(Identifier, ...)
     fields may be modified. Additionaly, a new wrapper will be created that will call prototype
     metamethods with the Class function variable set to the clone as to properly validate field traits.
     ]]
-    function Class:new()
+    function Class:new(...)
         assert(self:isPrototype())
         local NewClass = DeepCopy(Class)
         NewClass.decl = false
@@ -253,6 +253,11 @@ function Class(Identifier, ...)
         
         NewClass.proxy = NewProxy
         NewClass.proto = Proxy
+        
+        -- Call the class's constructor if it has one
+        if NewClass:hasFunction("construct") then
+            NewProxy:construct(...)
+        end
         return NewProxy
     end
 
@@ -306,6 +311,17 @@ function Class(Identifier, ...)
     
     function Class:rep()
         return ("<class %s>"):format(Identifier)
+    end
+    
+    function Class:hasField(field)
+        return self[field] ~= nil
+    end
+    
+    function Class:hasFunction(field)
+        local Field = self[field]
+        if Field then
+            return type(Field.ref) == "function" and TableSize(Field.overloads) == 0
+        end
     end
     
     function Class:raw()
@@ -468,3 +484,9 @@ function Class(Identifier, ...)
     
     return Proxy
 end
+
+test = Class('test')
+function test:construct(val, v)
+    print(val, v)
+end
+test:new("c", "d")
