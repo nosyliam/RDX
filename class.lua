@@ -116,7 +116,9 @@ function Class(identifier, ...)
         wrapperMetatable.__index = function(_, key)
             return Metatable.__index(proxy, key, class, true)
         end
-        wrapperMetatable.__newindex = function(_, ...) return Metatable.__newindex(proxy, ...) end
+        wrapperMetatable.__newindex = function(_, key, new, classObject, traits) 
+            return Metatable.__newindex(proxy, key, new, classObject, traits, true)
+        end
         wrapperMetatable.__metatable = ('<protected class function wrapper metatable %s>'):format(tostring(wrapper))
         for op, _ in pairs(META_OPS) do
             wrapperMetatable[op] = function(_, ...) return Metatable[op](proxy, ...) end
@@ -422,21 +424,35 @@ function Class(identifier, ...)
         end
     end
 
-    
-    Metatable.__newindex = function(proxy, key, new, classObject, traits)
+    --- Class __newindex override
+    -- Class:__newindex is fired whenever a field in a class prototype or instantiated object is created or
+    -- modified. If the field does not already exist and the calling class is a prototype, __newindex will create 
+    -- the field with the currently active field traits. Fields from superclasses may only modified if they are
+    -- virtual. Like __index, any modification to private or protected fields outside of a function or prototype is 
+    -- not permitted. The combination of private and protected is not permitted.
+    -- @function Class:__newindex
+    -- @within Class
+    Metatable.__newindex = function(proxy, key, new, classObject, traits, inFunc)
         traits = traits or {}
         classObject = classObject or Class
         
-        -- If the value already exists within our class, let's make sure we're not re-declaring it.
         value = classObject[key]
         if value then
             -- Internal values, especially decl, should be readonly. As described in __index, we may verify that
             -- the value is not internal by verifying that it is a field prototype.
             assert(type(value) == "table" and value.accessors, ("Attempt to modify an internal value"))
-            assert(#traits == 0, ("Attempt to declare already-existing field <%s>"):format(key))
+            if not Class:instanceOf(value.class) then
+                -- If an already-existing field is defined in a superclass, then it may only be modified it's virtual
+                assert((not value.traits[DECL_FLAGS.private]) and value.traits[DECL_FLAGS.virtual], ("Attempt to modify protected field <%s> from superclass %s"):format(key, value.class:rep()))
+            end
+            assert(TableSize(traits) == 0 or proxy:isPrototype(), ("Attempt to declare already-existing field <%s>"):format(key))
             assert(not value.traits[DECL_FLAGS.final], ("Attempt to modify final field <%s>"):format(key))
+            if not inFunc and (not proxy:isPrototype()) then
+                assert(not value.traits[DECL_FLAGS.private], ("Attempt to modify private field <%s>"):format(key))
+                assert(not value.traits[DECL_FLAGS.protected], ("Attempt to modify protected field <%s>"):format(key))
+            end
             if value.accessors.set then
-                -- Set accessors are given the function environment variables value, a placeholder retrieved
+                -- Set accessors are given tshe function environment variables value, a placeholder retrieved
                 -- as the final value, and the value name as a reference to the actual value.
                 getfenv(value.accessors.set)['value'] = new
                 getfenv(value.accessors.set)[key] = value.ref
@@ -452,6 +468,7 @@ function Class(identifier, ...)
             -- in an error. Private and protected must also be isolated.
             assert(proxy:isPrototype(), ("Attempt to declare field <%s> outside of prototype"):format(key))
             assert(not (traits[DECL_FLAGS.private] and traits[DECL_FLAGS.protected]), ("Private and protected declaration is not permitted"))
+            
             -- We're in the clear to append it to the prototype.
             classObject[key] = {
                 ref        = new,
