@@ -1,3 +1,7 @@
+--- Core OOP implementation
+-- @module class
+-- @author nosyliam
+
 local RDX_ROBLOX = false
 local ROBLOX_TO_CLASS = {
 }
@@ -26,14 +30,20 @@ local META_OPS = {
 	__tostring  = {'tostring', 'str'}
 }
 
-function Class(Identifier, ...)
+--- Create an empty class prototype with the given identifier.
+-- @function Class
+-- @within Class
+-- @tparam string identifier Class identifier
+-- @tparam {Class,...} superclasses
+-- @treturn Class Class prototype
+function Class(identifier, ...)
     --[[
     The tangential class variable shall never be accessed outside
     of the initial base class constructor -- it's sole purpose is for registering and
     storing functions, values, and references. The benefit of diverging the metatable
     of the class into a proxy is that any form of index will *always* be triggered and subsequently validated.
     ]]
-    local Class = {originalId = Identifier, id = Identifier, supers = {}, decl = true, _decltraits = 0}
+    local Class = {id = identifier, supers = {}, decl = true, _decltraits = 0}
     local Prototype = newproxy(true)
     local Metatable = getmetatable(Prototype)
     local Overrides = {}
@@ -227,11 +237,13 @@ function Class(Identifier, ...)
         
     end
     
-    --[[
-    Class:new will create an semi-immutable clone of the prototype New fields may not be declared after this point, but existing public
-    fields may be modified. Additionaly, a new wrapper will be created that will call prototype
-    metamethods with the Class function variable set to the clone as to properly validate field traits.
-    ]]
+    
+    --- Creates an semi-immutable clone of a class prototype. New fields may not be declared after this
+    -- point, but existing public fields may be modified. If the prototype has a constructor
+    -- (a function named `construct`), then :new will call it with any arguments passed.
+    -- @within Class
+    -- @tparam ... arguments Constructor arguments
+    -- @return Instantiated class
     function Class:new(...)
         assert(self:isPrototype())
         local newClass = DeepCopy(Class)
@@ -311,7 +323,7 @@ function Class(Identifier, ...)
     end
     
     function Class:rep()
-        return ("<class %s>"):format(Identifier)
+        return ("<class %s>"):format(identifier)
     end
     
     function Class:hasField(field)
@@ -330,6 +342,14 @@ function Class(Identifier, ...)
         return DeepCopy(Class)
     end
 
+    --- Class __index override
+    -- Class:__index is fired whenever a class prototype or instantiated object is
+    -- directly indexed. Upon being called, __index will attempt to retrieve the indexed field. If the field
+    -- does exist, it's traits are validated and it's value returned. Class:__index will behave differently depending
+    -- on where it is called -- if it is called within a class function, private and protected members are accessible. If they
+    -- are accessed otherwise, an error is thrown.
+    -- @function Class:__index
+    -- @within Class
     Metatable.__index = function(proxy, key, classObject, inFunc)
         -- First, let's check that we have the key in our store.
         local classObject = classObject or Class
@@ -445,7 +465,7 @@ function Class(Identifier, ...)
         
     end
     Metatable.__metatable = ("<protected metatable %s>"):format(tostring(Prototype))
-    Metatable.__tostring = function(class) return ("<class %s>"):format(Identifier) end
+    Metatable.__tostring = function(class) return ("<class %s>"):format(identifier) end
     
     --[[
     Class.[private, protected, virtual, final, static]() are syntactic sugars for
