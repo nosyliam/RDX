@@ -3,11 +3,10 @@
 -- @author nosyliam
 -- @set sort=true
 
-local RDX_ROBLOX = false
-local ROBLOX_TO_CLASS = {
+ROBLOX_TO_CLASS = {
 }
-local PRIMITIVE_TO_CLASS = {}
-local DECL_FLAGS = {
+PRIMITIVE_TO_CLASS = {}
+DECL_FLAGS = {
     private = 1,
     virtual = 2,
     protected = 3,
@@ -15,7 +14,7 @@ local DECL_FLAGS = {
     static = 5,
 }
 
-local META_OPS = {
+META_OPS = {
 	__len       = {'len', '#'},
 	__unm       = {'unary', 'minus', '--'},
 	__add       = {'add', 'addition', '+'},
@@ -90,13 +89,14 @@ function Class(identifier, ...)
     local function GenerateSignature(name, ...)
         local signature = name
         for _, arg in pairs({...}) do
-            -- Because we do not want to handle builtin datatypes in general, we must extend our coverage to
-            -- ROBLOX types alongside Lua types. All ROBLOX datatypes are assumed to be tables.
             if RDX_ROBLOX and type(arg) == "table" and ROBLOX_TO_CLASS[arg] then
                 arg = ROBLOX_TO_CLASS[arg]
             end
+
+            if type(arg) ~= "userdata" then
+                arg = PRIMITIVE_TO_CLASS[type(arg)]
+            end
             
-            assert(type(arg) == "userdata", ('Registered function <%s> may not use builtin type <%s> as argument'):format(name, type(arg)))
             success, ret = pcall(arg.type, arg)
             if success then
                 signature = signature .. ret
@@ -582,8 +582,6 @@ function Class(identifier, ...)
     -- 
     -- print(Customer:getBalance()) -- 10
     -- print(Customer.balance) -- error
-    ]]
-
     TraitWrapper:property('private', {get = function(self, proxy) return CreateDeclWrapper(self, proxy, DECL_FLAGS.private) end, set = function() end})
     --- Protected trait wrapper.
     -- Declaring a field with the `protected` trait will ensure that the declared field
@@ -652,3 +650,5 @@ function Class(identifier, ...)
     
     return Prototype
 end
+
+PRIMITIVE_TO_CLASS = require (RDX_ROBLOX and script.Parent.Primitives or 'primitives')
