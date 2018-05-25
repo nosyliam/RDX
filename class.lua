@@ -1,10 +1,12 @@
 --- Core OOP implementation
 -- @module class
 -- @author nosyliam
+-- @set sort=true
 
 local RDX_ROBLOX = false
 local ROBLOX_TO_CLASS = {
 }
+local PRIMITIVE_TO_CLASS = {}
 local DECL_FLAGS = {
     private = 1,
     virtual = 2,
@@ -176,19 +178,25 @@ function Class(identifier, ...)
         end
     end
 
-    --[[
-    Inspired by C#, Properties are fields in a class that will act upon accessors get and set.
-    The traits argument should be a dictionary containing "get", "set", and
-    their corresponding functions. Accessor functions are called with environment variables:
-        - The property name (a proxy which will process raw set operations)
-        - "value", the actual value in an index operation
     
-    e.g. Class:property "name" {
-        set = function() name = value end;
-        get = function() return name end;
-        default = 0;
-    }
-    ]]
+    --- Creates a property with the given field. Inspired by C#, properties are fields in a class that will 
+    -- act upon accessors get and set. Properties have numerous uses, such as validating field data, processing
+    -- raw data, or making a field read-only. Accessor functions are treated as class functions, but called with an
+    -- environment where the property name is set to the property's current value. In addition, the set accessor is
+    -- given an additional environment variable `value` which stores the value passed to the property. The initial value
+    -- of the property is set to the value of `default` in the accessors table; if it does not exist, the default value is zero.
+    -- @function Class:property
+    -- @within Class
+    -- @tparam string name Property name
+    -- @tparam table accessors Accessor table
+    -- @usage Person = Class('Person')
+    -- Person:property "name" {
+    --      set = function() name = value end;
+    --      get = function() return "Mr. " .. name end;
+    --      default = "";
+    -- }
+    -- Bob.name = "Bob"
+    -- print(Bob.name) -- "Mr. Bob"
     function Class:property(name, accessors)
         -- Before anything, we need to proceed with proper assertions
         assert(accessors and type(accessors) == "table", ("Invalid accessor table passed to :property"))
@@ -208,11 +216,29 @@ function Class(identifier, ...)
         }
     end
     
-    function Class:overload(name, ...)
+    --- Creates a new function overload on the given field. For an overload to be defined, the field
+    -- must not exist or have at least one overload. When an overloaded function is called, the function
+    -- dispatcher will create a signature based on the arguments passed and determine the correct overload to call.
+    -- Overloaded functions may not use primitive types except functions and userdatas. Overloaded functions may also not
+    -- be static. The final argument of :overload must be a function.
+    -- @within Class
+    -- @tparam string field
+    -- @tparam {Class,...,function} arguments
+    -- @usage Customer = Class('Customer')
+    -- Customer.balance = 100
+    -- Customer:overload("pay", Number, function(amount)
+    --      self.balance = self.balance - amount
+    -- end)
+    -- Customer:overload("pay", Number, Number, function(amount, tip)
+    --      self.balance = self.balance - (amount / 100 * tip)
+    -- end)
+    -- Customer:pay(10) -- pay no tip
+    -- Customer:pay(10, 15) -- pay with 15% tipS
+    function Class:overload(field, ...)
         local func = select(select("#", ...), ...)
         -- Before anything, we need to proceed with proper assertions
-        assert(type(Function) == "function", ("Final argument of :overload is not a function"))
-        assert(self:isPrototype(), ("Attempt to declare overload <%s> outside of prototype"):format(name))
+        assert(type(func) == "function", ("Final argument of :overload is not a function"))
+        assert(self:isPrototype(), ("Attempt to declare overload <%s> outside of prototype"):format(field))
         assert(not (traits[DECL_FLAGS.private] and traits[DECL_FLAGS.protected]), ("Private and protected declaration is not permitted"))
         assert(not (traits[DECL_FLAGS.static]), ("Static declaration is not permitted for overloads"))
         
@@ -223,12 +249,12 @@ function Class(identifier, ...)
         
         -- A field prototype can only be an overload if it has more than one overload defined. A regular
         -- function may not be converted into an overload.
-        local value = self[name]
+        local value = self[field]
         if value then
-            assert(type(value.ref) == "function" and TableSize(value.overloads) >= 1, ("Attempt to declare function <%s> as overload"):format(name))
+            assert(type(value.ref) == "function" and TableSize(value.overloads) >= 1, ("Attempt to declare function <%s> as overload"):format(field))
             value.overloads[signature] = func
         else
-            self[name] = {
+            self[field] = {
                 ref        = (function() --[[ placeholder function ]] end),
                 accessors  = {},
                 overloads  = {[signature] = func},     
@@ -276,10 +302,20 @@ function Class(identifier, ...)
         return newProxy
     end
 
-    --[[
-    Class:override will create a function override on the given metamethod. This is useful for
-    utility classes such as strings, which can use the addition operator to join strings.
-    ]]
+    --- Creates a metamethod override on the class. Override is especially useful for
+    -- utility classes, such as a string which may override the addition metamethod.
+    -- The function is treated as a class function, with the first argument passed always being a
+    -- class wrapper which allows access to private and protected members.
+    -- @within Class
+    -- @tparam string op Metamethod
+    -- @tparam function func Function
+    -- @usage String = Class('String')
+    -- String.private.value = "RDX"
+    -- String:override("tostring", function(self)
+    --      return self.value
+    -- end)
+    --
+    -- print(String:new()) -- prints "RDX"
     function Class:override(op, func)
         local op = FindOpFromAlias(op)
         assert(self:isPrototype(), ("Attempt to modify metamethod <%s> outside of prototype"):format(op))
@@ -293,10 +329,17 @@ function Class(identifier, ...)
         end
     end
     
+    --- Removes a metamethod override.
+    -- @within Class
+    -- @tparam string op Metamethod
     function Class:revert(op)
         self:override(op, nil)
     end
     
+    --- Checks whether or not the given prototype is a superclass.
+    -- @within Class
+    -- @tparam Class proto Class prototype
+    -- @treturn bool
     function Class:instanceOf(proto)
         -- Because :instanceOf is only being called from outside builtin functions, we must
         -- compare our proxy rather than the actual class.
@@ -307,47 +350,76 @@ function Class(identifier, ...)
                     return true
                 end
             end
+            return false
         else
             return true
         end
     end
 
+    --- Returns the class identifier. It is recommended to use :instanceOf or compare class prototypes with
+    -- :getPrototype rather than comparing class identifiers as RDX does not prevent classes with identical identifiers.
+    -- @within Class
+    -- @treturn string Class identifier
     function Class:type()
         return self.id
     end
     
+    --- Checks whether or not the class is a prototype.
+    -- @within Class
+    -- @treturn bool
     function Class:isPrototype()
         return self.decl
     end
     
+    --- Returns a reference to the class prototype.
+    -- @within Class
+    -- @treturn Class
     function Class:getPrototype()  
         return self.proto or Prototype
     end
     
+    --- Returns the string representation of the class.
+    -- @within Class
+    -- @treturn string
     function Class:rep()
         return ("<class %s>"):format(identifier)
     end
     
+    --- Checks if the class contains a field.
+    -- @within Class
+    -- @tparam string field Field name
+    -- @treturn bool
     function Class:hasField(field)
         return self[field] ~= nil
     end
     
+    --- Checks if the class contains a function.
+    -- @within Class
+    -- @tparam string field Function name
+    -- @treturn bool
     function Class:hasFunction(field)
         local field = self[field]
         if field then
             return type(field.ref) == "function" and TableSize(field.overloads) == 0
+        else
+            return false
         end
     end
     
+    --- Returns a raw representation of a class prototype. Class data is stored as a key-value
+    -- dictionary which maps to field prototypes. Internal values may also be retrieved via :raw, such
+    -- as Class.supers which contains the class prototype's superclasses.
+    -- @within Class
+    -- @treturn table Raw class data
     function Class:raw()
         assert(self:isPrototype())
         return DeepCopy(Class)
     end
 
-    --- Class __index override
+    --- Class __index override.
     -- Class:__index is fired whenever a class prototype or instantiated object is
     -- directly indexed. Upon being called, __index will attempt to retrieve the indexed field. If the field
-    -- does exist, it's traits are validated and it's value returned. Class:__index will behave differently depending
+    -- does exist, it's traits are validated and it's value returned. __index will behave differently depending
     -- on where it is called -- if it is called within a class function, private and protected members are accessible. If they
     -- are accessed otherwise, an error is thrown.
     -- @function Class:__index
@@ -424,12 +496,11 @@ function Class(identifier, ...)
         end
     end
 
-    --- Class __newindex override
+    --- Class __newindex override.
     -- Class:__newindex is fired whenever a field in a class prototype or instantiated object is created or
     -- modified. If the field does not already exist and the calling class is a prototype, __newindex will create 
-    -- the field with the currently active field traits. Fields from superclasses may only modified if they are
-    -- virtual. Like __index, any modification to private or protected fields outside of a function or prototype is 
-    -- not permitted. The combination of private and protected is not permitted.
+    -- the field with the currently active field traits. Like __index, any modification to private or protected fields
+    -- outside of a function or prototype is not permitted. The combination of private and protected is not permitted.
     -- @function Class:__newindex
     -- @within Class
     Metatable.__newindex = function(proxy, key, new, classObject, traits, inFunc)
@@ -452,11 +523,11 @@ function Class(identifier, ...)
                 assert(not value.traits[DECL_FLAGS.protected], ("Attempt to modify protected field <%s>"):format(key))
             end
             if value.accessors.set then
-                -- Set accessors are given tshe function environment variables value, a placeholder retrieved
+                -- Set accessors are given the function environment variables value, a placeholder retrieved
                 -- as the final value, and the value name as a reference to the actual value.
                 getfenv(value.accessors.set)['value'] = new
                 getfenv(value.accessors.set)[key] = value.ref
-                value.accessors.set()
+                value.accessors.set(CreateFunctionWrapper(proxy, classObject))
                 -- After calling the accessor, any change to value is assumed to be registered in the function's environment
                 classObject[key].ref = getfenv(value.accessors.set)[key]
                 return
@@ -492,12 +563,72 @@ function Class(identifier, ...)
     e.g. foo.private.secret = 0xDEADBEEF
     Wrappers may also be stacked, e.g. foo.private.virtual.secret = 0xDEADBEEF
     ]]
+    --- Class traits
+    -- @section Traits
     local TraitWrapper = CreateDeclWrapper(Class, Prototype, DECL_FLAGS.static)
     CreateDeclWrapper(Class, TraitWrapper, DECL_FLAGS.final)
+    
+    --- Private trait wrapper.
+    -- Declaring a field with the `private` trait will ensure that the declared field
+    -- may only be accessed by functions from within the class. This restriction does not apply
+    -- to class prototypes.
+    -- @field Class.private
+    -- @within Traits
+    -- @usage Customer = Class('Customer')
+    -- Customer.private.balance = 10
+    -- function Customer:getBalance()
+    --      return self.balance
+    -- end
+    -- 
+    -- print(Customer:getBalance()) -- 10
+    -- print(Customer.balance) -- error
+    ]]
+
     TraitWrapper:property('private', {get = function(self, proxy) return CreateDeclWrapper(self, proxy, DECL_FLAGS.private) end, set = function() end})
+    --- Protected trait wrapper.
+    -- Declaring a field with the `protected` trait will ensure that the declared field
+    -- may only be accessed from functions within the defining class and any subclasses. This
+    -- restriction does not apply to class prototypes.
+    -- @field Class.protected
+    -- @within Traits
+    -- @usage Person = Class('Person')
+    -- Person.protected.ssn = 500
+    -- Worker = Class('Worker', Person)
+    -- function Worker:makePayment()
+    --      makePayment(self.ssn)
+    -- end
     TraitWrapper:property('protected', {get = function(self, proxy) return CreateDeclWrapper(self, proxy, DECL_FLAGS.protected) end, set = function() end})
+    --- Virtual trait wrapper.
+    -- By default, fields from superclasses may not be modified by subclasses. This behavior may be
+    -- overriden by declaring fields with the `virtual` field trait.
+    -- @field Class.virtual
+    -- @within Traits
+    -- @usage Salary = Class('Salary')
+    -- function Salary.virtual:defaultSalary()
+    --      return 100
+    -- end
+    -- Lawyer = Class('Lawyer', Salary)
+    -- function Lawyer:defaultSalary()
+    --      return Salary.defaultSalary(self) + 500
+    -- end
     TraitWrapper:property('virtual', {get = function(self, proxy) return CreateDeclWrapper(self, proxy, DECL_FLAGS.virtual) end, set = function() end})
+    --- Static trait wrapper.
+    -- Fields declared with the `static` trait are returned as-is.
+    -- @field Class.static
+    -- @within Traits
+    -- @usage Calculator = Class('Calculator')
+    -- Calculator.static.pi = 3.14
+    -- MyCalculator = Calculator:new()
+    -- print(MyCalculator) -- 3.14
     TraitWrapper:property('static', {get = function(self, proxy) return CreateDeclWrapper(self, proxy, DECL_FLAGS.static) end, set = function() end})  
+    --- Final trait wrapper.
+    -- Fields declared with the `final` trait may not be modified after they are created under any
+    -- circumstance, even within the class prototype.
+    -- @field Class.final
+    -- @within Traits
+    -- @usage Lobby = Class('Lobby')
+    -- Lobby.final.size = 20
+    -- Lobby.size = 30 -- error
     TraitWrapper:property('final', {get = function(self, proxy) return CreateDeclWrapper(self, proxy, DECL_FLAGS.final) end, set = function() end})
     
     --[[
